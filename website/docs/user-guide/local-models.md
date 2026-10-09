@@ -78,6 +78,10 @@ build spilled to system RAM simply can't run that model.
 Models that don't fit stay visible with the reason, so you always know
 what a hardware upgrade would unlock.
 
+Hermes recommends the highest-quality model that runs entirely in GPU
+memory at 20 tokens per second or faster. When no model does, Hermes
+recommends none, and you can still choose any model that fits.
+
 ## How memory management works
 
 Local models live or die by memory placement, so Hermes manages it
