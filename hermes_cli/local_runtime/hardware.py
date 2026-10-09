@@ -51,6 +51,7 @@ _POOL_RAM_FRACTION = 0.75
 
 # cuDeviceGetAttribute enum: device is integrated with host memory.
 _CU_DEVICE_ATTRIBUTE_INTEGRATED = 18
+_NVIDIA_VENDOR_ID = 0x10DE
 
 # One probe per process once a device answers (silicon doesn't change); a miss retries after this
 # long so a runtime installed mid-session gets picked up by the engine fallback.
@@ -401,6 +402,21 @@ def _uma_budget(base: int, total: int, *, gpu_name: str = "",
                           gpu_pci_id=gpu_pci_id, lazy_reads=lazy_reads)
 
 
+def _windows_igpu_bytes(device: "dict | None") -> int | None:
+    """What Windows lets the integrated GPU allocate (Task Manager's GPU memory), or None.
+
+    The adapter is the one the engine named, else the only non-NVIDIA hardware adapter. Not the
+    engine's own figure: ggml-vulkan sums every memory heap of an integrated GPU, host-visible
+    ones included, so it can exceed what Windows grants.
+    """
+    from hermes_cli.local_runtime.windows_adapters import adapters
+
+    hardware = [a for a in adapters() if not a.software]
+    named = [a for a in hardware if device is not None and a.description == device["description"]]
+    candidates = named or [a for a in hardware if a.vendor_id != _NVIDIA_VENDOR_ID]
+    return candidates[0].memory_bytes if len(candidates) == 1 else None
+
+
 def probe_budget(*, planning: bool = False) -> HardwareBudget:
     """Construct the budget per the source rules above.
 
@@ -445,10 +461,12 @@ def probe_budget(*, planning: bool = False) -> HardwareBudget:
             return HardwareBudget(usable_vram_bytes=max(0, total - margin), total_device_bytes=total,
                                   ram_available_bytes=ram_total if planning else ram_avail,
                                   uma=False, gpu_name=device["description"], platform=sys.platform)
-        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory. llama.cpp
-        # loads lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand
-        # halved prefill (#28160).
-        return _uma_budget(ram_total if planning else ram_avail, ram_total,
+        # Integrated GPU, Metal, CPU, or no answer: budget from RAM as unified memory, capped at what
+        # Windows lets an integrated GPU allocate (18 GB of 31.5 on an Arc B390). llama.cpp loads
+        # lazy tensors up front on an AMD/Intel integrated GPU, where reading them on demand halved
+        # prefill (#28160).
+        pool = min(ram_total, _windows_igpu_bytes(device) or ram_total)
+        return _uma_budget(pool if planning else min(pool, ram_avail), pool,
                            lazy_reads=gpu_class() not in ("amd", "intel"))
 
     total, free, gpu_name, gpu_pci_id = vram
